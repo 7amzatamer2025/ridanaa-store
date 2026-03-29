@@ -3,9 +3,12 @@ from flask_sqlalchemy import SQLAlchemy
 import os, json
 
 app = Flask(__name__)
+# تحديد المسار الأساسي للمشروع
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(BASE_DIR, 'ridanaa.db')
-app.config['UPLOAD_FOLDER'] = 'static/uploads'
+app.config['UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'static/uploads')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
 db = SQLAlchemy(app)
 
 # الجداول
@@ -25,7 +28,10 @@ class Order(db.Model):
     items = db.Column(db.Text)
     status = db.Column(db.String(20), default="قيد الانتظار")
 
+# إنشاء قاعدة البيانات تلقائياً
 with app.app_context():
+    if not os.path.exists(app.config['UPLOAD_FOLDER']):
+        os.makedirs(app.config['UPLOAD_FOLDER'])
     db.create_all()
 
 @app.route('/')
@@ -56,8 +62,9 @@ def save_product():
     else: # إضافة منتج جديد
         saved = []
         for f in files:
-            f.save(os.path.join(app.config['UPLOAD_FOLDER'], f.filename))
-            saved.append('/static/uploads/' + f.filename)
+            if f.filename != '':
+                f.save(os.path.join(app.config['UPLOAD_FOLDER'], f.filename))
+                saved.append('/static/uploads/' + f.filename)
         db.session.add(Product(name_ar=request.form['name_ar'], name_en=request.form['name_en'], price=float(request.form['price']), images_json=json.dumps(saved), inventory_json=inv))
     
     db.session.commit()
@@ -65,12 +72,17 @@ def save_product():
 
 @app.route('/admin/delete/<int:id>')
 def delete_p(id):
-    db.session.delete(Product.query.get(id)); db.session.commit(); return redirect('/admin')
+    p = Product.query.get(id)
+    if p:
+        db.session.delete(p)
+        db.session.commit()
+    return redirect('/admin')
 
 @app.route('/order', methods=['POST'])
 def create_order():
     data = request.json
-    db.session.add(Order(name=data['name'], phone=data['phone'], address=data['address'], items=data['items'])); db.session.commit()
+    db.session.add(Order(name=data['name'], phone=data['phone'], address=data['address'], items=data['items']))
+    db.session.commit()
     return jsonify({"status": "ok"})
 
 @app.route('/api/my_orders/<phone>')
@@ -80,7 +92,10 @@ def get_my_orders(phone):
 
 @app.route('/admin/status/<int:id>/<string:st>')
 def update_status(id, st):
-    o = Order.query.get(id); o.status = "تم التأكيد" if st=='ok' else "مرفوض"; db.session.commit()
+    o = Order.query.get(id)
+    if o:
+        o.status = "تم التأكيد" if st=='ok' else "مرفوض"
+        db.session.commit()
     return redirect('/admin')
 
 if __name__ == '__main__':
