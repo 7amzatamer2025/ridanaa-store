@@ -3,9 +3,13 @@ from flask_sqlalchemy import SQLAlchemy
 import os, json
 
 app = Flask(__name__)
+
+# تحديد المسار الأساسي للمشروع لضمان وصول السيرفر لقاعدة البيانات والصور
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(BASE_DIR, 'ridanaa.db')
-app.config['UPLOAD_FOLDER'] = 'static/uploads'
+app.config['UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'static/uploads')
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
 db = SQLAlchemy(app)
 
 # الجداول
@@ -25,14 +29,29 @@ class Order(db.Model):
     items = db.Column(db.Text)
     status = db.Column(db.String(20), default="قيد الانتظار")
 
+# إنشاء قاعدة البيانات وفولدر الرفع تلقائياً عند التشغيل
 with app.app_context():
+    if not os.path.exists(app.config['UPLOAD_FOLDER']):
+        os.makedirs(app.config['UPLOAD_FOLDER'])
     db.create_all()
 
 @app.route('/')
 def index():
-    products = Product.query.all()
-    p_list = [{"id":p.id,"nameAr":p.name_ar,"nameEn":p.name_en,"price":p.price,"imgs":json.loads(p.images_json),"inventory":json.loads(p.inventory_json)} for p in products]
-    return render_template('index.html', products_json=json.dumps(p_list))
+    try:
+        products = Product.query.all()
+        p_list = []
+        for p in products:
+            p_list.append({
+                "id": p.id,
+                "nameAr": p.name_ar,
+                "nameEn": p.name_en,
+                "price": p.price,
+                "imgs": json.loads(p.images_json) if p.images_json else [],
+                "inventory": json.loads(p.inventory_json) if p.inventory_json else {}
+            })
+        return render_template('index.html', products_json=json.dumps(p_list))
+    except Exception as e:
+        return f"Error: {str(e)}" # بيساعدنا نعرف المشكلة لو حصلت بدل صفحة Error 500 البيضاء
 
 @app.route('/admin')
 def admin():
@@ -44,44 +63,38 @@ def save_product():
     inv = json.dumps({s: int(request.form.get(f'qty_{s}', 0)) for s in ['S','M','L','XL']})
     files = request.files.getlist('images')
     
-    if p_id: # تعديل منتج موجود
-        p = Product.query.get(p_id)
-        p.name_ar, p.name_en, p.price, p.inventory_json = request.form['name_ar'], request.form['name_en'], float(request.form['price']), inv
-        if files and files[0].filename != '':
-            saved = []
-            for f in files:
-                f.save(os.path.join(app.config['UPLOAD_FOLDER'], f.filename))
-                saved.append('/static/uploads/' + f.filename)
-            p.images_json = json.dumps(saved)
-    else: # إضافة منتج جديد
-        saved = []
+    saved = []
+    if files and files[0].filename != '':
         for f in files:
+            # حفظ الصورة في المسار الكامل الصحيح
             f.save(os.path.join(app.config['UPLOAD_FOLDER'], f.filename))
             saved.append('/static/uploads/' + f.filename)
-        db.session.add(Product(name_ar=request.form['name_ar'], name_en=request.form['name_en'], price=float(request.form['price']), images_json=json.dumps(saved), inventory_json=inv))
+    
+    if p_id: # تعديل
+        p = Product.query.get(p_id)
+        p.name_ar, p.name_en, p.price, p.inventory_json = request.form['name_ar'], request.form['name_en'], float(request.form['price']), inv
+        if saved: p.images_json = json.dumps(saved)
+    else: # إضافة جديد
+        new_p = Product(name_ar=request.form['name_ar'], name_en=request.form['name_en'], price=float(request.form['price']), images_json=json.dumps(saved), inventory_json=inv)
+        db.session.add(new_p)
     
     db.session.commit()
     return redirect('/admin')
 
 @app.route('/admin/delete/<int:id>')
 def delete_p(id):
-    db.session.delete(Product.query.get(id)); db.session.commit(); return redirect('/admin')
+    p = Product.query.get(id)
+    if p:
+        db.session.delete(p)
+        db.session.commit()
+    return redirect('/admin')
 
 @app.route('/order', methods=['POST'])
 def create_order():
     data = request.json
-    db.session.add(Order(name=data['name'], phone=data['phone'], address=data['address'], items=data['items'])); db.session.commit()
+    db.session.add(Order(name=data['name'], phone=data['phone'], address=data['address'], items=data['items']))
+    db.session.commit()
     return jsonify({"status": "ok"})
-
-@app.route('/api/my_orders/<phone>')
-def get_my_orders(phone):
-    orders = Order.query.filter_by(phone=phone).all()
-    return jsonify([{"items": o.items, "status": o.status} for o in orders])
-
-@app.route('/admin/status/<int:id>/<string:st>')
-def update_status(id, st):
-    o = Order.query.get(id); o.status = "تم التأكيد" if st=='ok' else "مرفوض"; db.session.commit()
-    return redirect('/admin')
 
 if __name__ == '__main__':
     app.run(debug=True)
